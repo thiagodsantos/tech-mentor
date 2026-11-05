@@ -1,4 +1,4 @@
-.PHONY: setup up dev down logs status api-dev frontend-dev test test-backend test-frontend lint migrate keygen
+.PHONY: setup up dev down logs status api-dev frontend-dev test test-backend test-frontend lint migrate backup restore keygen
 
 setup:
 	python3 scripts/init_env.py
@@ -37,6 +37,13 @@ lint:
 
 migrate: setup
 	docker compose run --rm api python -m app.init_db
+
+backup:
+	bash scripts/backup_db.sh
+
+restore:
+	@test -n "$(BACKUP)" || { echo 'Uso: make restore BACKUP=caminho/do/arquivo.dump'; exit 2; }
+	bash scripts/restore_db.sh "$(BACKUP)"
 
 keygen:
 	python3 -c 'import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
