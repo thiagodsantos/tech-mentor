@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 import unicodedata
+from urllib.parse import quote
 
 from app.config import AppConfig
 
@@ -54,6 +55,68 @@ class OpenRouterClient:
         if not isinstance(data, dict):
             raise OpenRouterError("OpenRouter returned an invalid credits response.")
         return data
+
+
+    async def create_batch(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        custom_id: str,
+        callback_url: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "endpoint": "/v1/chat/completions",
+            "model": model,
+        }
+        if callback_url:
+            body["callback_url"] = callback_url
+        body["requests"] = [
+            {
+                "custom_id": custom_id,
+                "body": {
+                    "temperature": 0.3,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+            }
+        ]
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/batches",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=body,
+                )
+                if response.is_error:
+                    if response.status_code == 401:
+                        message = "OpenRouter rejected the API key."
+                    elif response.status_code == 429:
+                        message = "OpenRouter rate limit reached."
+                    else:
+                        message = f"OpenRouter request failed (HTTP {response.status_code})."
+                    raise OpenRouterError(message, response.status_code)
+                payload = response.json()
+        except OpenRouterError:
+            raise
+        except (httpx.HTTPError, ValueError):
+            raise OpenRouterError("Could not reach OpenRouter or decode its response.") from None
+
+        batch = payload.get("data", payload) if isinstance(payload, dict) else None
+        if not isinstance(batch, dict) or not isinstance(batch.get("id"), str):
+            raise OpenRouterError("OpenRouter returned an invalid batch response.")
+        return batch
+
+    async def fetch_batch(self, batch_id: str, api_key: str) -> dict[str, Any]:
+        payload = await self._get(f"/batches/{quote(batch_id, safe='')}", api_key)
+        batch = payload.get("data", payload)
+        if not isinstance(batch, dict):
+            raise OpenRouterError("OpenRouter returned an invalid batch response.")
+        return batch
 
     async def validate_key(self, api_key: str) -> None:
         await self.fetch_credits(api_key)

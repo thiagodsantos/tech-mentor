@@ -45,6 +45,20 @@ make frontend-dev  # Vite em localhost:5173; encaminha /api para localhost:8000
 
 O frontend exige Node `>=22.12.0`. Para não usar SQLite no desenvolvimento, configure `DATABASE_URL` com uma conexão Postgres compatível.
 
+## Configuração do ambiente
+
+`make setup` cria `.env` a partir de `.env.example` e gera valores locais para a senha do banco e `FERNET_KEY`; não sobrescreve um `.env` existente. As variáveis estão agrupadas por finalidade nos dois arquivos:
+
+| Grupo | Variáveis | Uso |
+| --- | --- | --- |
+| PostgreSQL (Compose) | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Nome do banco, usuário e senha usados pelo serviço PostgreSQL. |
+| Credenciais | `FERNET_KEY`, `OPENROUTER_API_KEY` | Chave Fernet persistente para cifrar credenciais salvas; a chave OpenRouter é opcional e pode ser cadastrada pela interface local. |
+| Atualização e cache | `CREDITS_POLL_INTERVAL_SECONDS` (padrão `300`), `MINIMUM_CREDITS_POLL_INTERVAL_SECONDS` (padrão `60`), `MODELS_CACHE_TTL_SECONDS` (padrão `300`) | Intervalo de atualização automática dos créditos, limite mínimo para o intervalo configurável na interface (não inferior a `30` segundos) e validade do cache do catálogo, respectivamente. |
+| CORS | `CORS_ORIGINS` | Lista separada por vírgulas das origens permitidas no navegador; o padrão inclui os endereços locais do Vite. |
+| Webhooks Batch API (opcionais) | `OPENROUTER_BATCH_CALLBACK_URL`, `OPENROUTER_WEBHOOK_SECRET` | URL pública HTTPS e segredo de assinatura do workspace OpenRouter; configure ambos para habilitar callbacks. O endpoint e o comportamento local estão detalhados abaixo. |
+
+Não compartilhe nem versione `.env`. Se alterar `FERNET_KEY`, credenciais que foram cifradas com a chave anterior deixam de poder ser decifradas.
+
 ## OpenRouter e segredos
 
 - Crie/gerencie sua chave em <https://openrouter.ai/keys> e limite o gasto no painel do provedor.
@@ -52,6 +66,7 @@ O frontend exige Node `>=22.12.0`. Para não usar SQLite no desenvolvimento, con
 - `FERNET_KEY` é gerada por `make setup`. Faça backup seguro dessa chave junto com a política de backup do banco; perder a chave impossibilita decifrar credenciais já salvas.
 - `.env` contém segredos e está no `.gitignore`. Nunca versione esse arquivo, publique a API sem autenticação ou exponha as portas locais para a internet.
 - Compose vincula as portas web/API a `127.0.0.1`. Uma implantação remota exige HTTPS, autenticação, gestão de secrets e isolamento de usuários.
+- A exportação de roadmaps usa o Batch API assíncrono do OpenRouter. Em localhost o backend consulta o estado do lote; para receber webhooks, configure `OPENROUTER_BATCH_CALLBACK_URL` com uma URL pública HTTPS terminada em `/api/openrouter/batch-webhook` e `OPENROUTER_WEBHOOK_SECRET` com o segredo de assinatura do workspace OpenRouter. Veja `backend/README.md`.
 - Veja `backend/README.md` para endpoints, persistência e detalhes do RAG.
 
 ## Estrutura

@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -5,14 +7,21 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
+from pydantic import SecretStr
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.config import AppConfig
 from app.lesson_graph import LessonGenerationError, build_complement_graph, build_lesson_graph
 from app.main import create_app, poll_credits_once
-from app.models import KnowledgeChunk, LessonRecord, StoredCredential, utc_now
-from app.openrouter import OpenRouterError, normalize_model
+from app.models import (
+    KnowledgeChunk,
+    LessonComplementRecord,
+    LessonRecord,
+    StoredCredential,
+    utc_now,
+)
+from app.openrouter import OpenRouterClient, OpenRouterError, normalize_model
 from app.rag import index_source
 
 
@@ -44,6 +53,8 @@ class FakeOpenRouter:
         self.model_calls = 0
         self.fail_models = False
         self.validated_keys: list[str] = []
+        self.batch_calls: list[dict[str, Any]] = []
+        self.batch_response: dict[str, Any] = {"id": "batch-roadmap", "status": "validating"}
 
     async def list_models(self) -> list[dict[str, Any]]:
         self.model_calls += 1
@@ -75,6 +86,15 @@ class FakeOpenRouter:
 
     async def fetch_credits(self, api_key: str) -> dict[str, Any]:
         return {"total_credits": 10, "total_usage": 2}
+
+
+    async def create_batch(self, **kwargs: Any) -> dict[str, Any]:
+        self.batch_calls.append(kwargs)
+        return {"id": "batch-roadmap", "status": "validating"}
+
+    async def fetch_batch(self, batch_id: str, api_key: str) -> dict[str, Any]:
+        assert batch_id == "batch-roadmap"
+        return self.batch_response
 
 
 @pytest_asyncio.fixture
@@ -233,6 +253,164 @@ async def test_lesson_feedback_and_notes_are_persisted(api, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_roadmap_uses_lesson_and_every_complement_with_selected_model(api):
+    client, app, provider = api
+    lesson = LessonRecord(
+        id="lesson-roadmap",
+        topic="Python",
+        level="beginner",
+        goal="Learn Python",
+        model="openai/gpt-test",
+        content="Fundamentos da linguagem.",
+        sources=[],
+        created_at=utc_now(),
+    )
+    async with app.state.database.session_factory() as session:
+        session.add(lesson)
+        session.add_all([
+            LessonComplementRecord(
+                id="complement-accepted", lesson_id=lesson.id, prompt="Exemplo de funções",
+                content="Funções encapsulam comportamentos.", status="accepted", created_at=utc_now(),
+            ),
+            LessonComplementRecord(
+                id="complement-rejected", lesson_id=lesson.id, prompt="Analogia de listas",
+                content="Listas armazenam sequências.", status="rejected", created_at=utc_now(),
+            ),
+        ])
+        await session.commit()
+
+    response = await client.post(f"/api/lessons/{lesson.id}/roadmap", json={"model": "provider/alpha"})
+    assert response.status_code == 409
+    assert provider.batch_calls == []
+
+    await client.put("/api/settings/openrouter-key", json={"api_key": "sk-test-roadmap"})
+    response = await client.post(f"/api/lessons/{lesson.id}/roadmap", json={"model": "provider/alpha"})
+    assert response.status_code == 202, response.text
+    generation_id = response.json()["id"]
+    assert response.json()["status"] == "pending"
+    assert len(provider.batch_calls) == 1
+    call = provider.batch_calls[0]
+    assert call["api_key"] == "sk-test-roadmap"
+    assert call["model"] == "provider/alpha"
+    assert call["callback_url"] is None
+    assert "Fundamentos da linguagem." in call["user_prompt"]
+    assert "Funções encapsulam comportamentos." in call["user_prompt"]
+    assert "Listas armazenam sequências." in call["user_prompt"]
+    assert '"status": "rejected"' in call["user_prompt"]
+    assert "dado não confiável" in call["system_prompt"]
+
+    pending = await client.get(f"/api/roadmaps/{generation_id}")
+    assert pending.json()["status"] == "pending"
+    provider.batch_response = {
+        "id": "batch-roadmap",
+        "status": "completed",
+        "results": [{
+            "custom_id": generation_id,
+            "response": {"body": {"choices": [{"message": {"content": "# Roadmap concluído"}}]}},
+        }],
+    }
+    completed = await client.get(f"/api/roadmaps/{generation_id}")
+    assert completed.json()["status"] == "completed"
+    assert completed.json()["content"] == "# Roadmap concluído"
+
+    unavailable = await client.post(f"/api/lessons/{lesson.id}/roadmap", json={"model": "missing/model"})
+    assert unavailable.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_openrouter_batch_webhook_verifies_signature_and_saves_response(api):
+    client, app, provider = api
+    app.state.config.openrouter_batch_callback_url = "https://public.example.test/api/openrouter/batch-webhook"
+    app.state.config.openrouter_webhook_secret = SecretStr("webhook-test-secret")
+    await client.put("/api/settings/openrouter-key", json={"api_key": "sk-test-webhook"})
+    async with app.state.database.session_factory() as session:
+        session.add(LessonRecord(
+            id="lesson-webhook", topic="Python", level="beginner", goal="Learn",
+            model="openai/gpt-test", content="Basics", sources=[], created_at=utc_now(),
+        ))
+        await session.commit()
+
+    submitted = await client.post("/api/lessons/lesson-webhook/roadmap", json={"model": "provider/alpha"})
+    assert submitted.status_code == 202
+    assert provider.batch_calls[-1]["callback_url"] == app.state.config.openrouter_batch_callback_url
+    generation_id = submitted.json()["id"]
+    provider.batch_response = {
+        "id": "batch-roadmap",
+        "status": "completed",
+        "results": [{
+            "custom_id": generation_id,
+            "response": {"body": {"choices": [{"message": {"content": "# Webhook roadmap"}}]}},
+        }],
+    }
+
+    event_body = json.dumps({
+        "id": "event-roadmap-1", "type": "batch.completed", "data": {"id": "batch-roadmap"}
+    }).encode()
+    timestamp = str(int(datetime.now(timezone.utc).timestamp()))
+    signature = hmac.new(
+        b"webhook-test-secret", timestamp.encode() + b"," + event_body, hashlib.sha256
+    ).hexdigest()
+    headers = {"X-OpenRouter-Signature": f"t={timestamp},v1={signature}"}
+    webhook = await client.post("/api/openrouter/batch-webhook", content=event_body, headers=headers)
+    assert webhook.status_code == 204
+    repeated = await client.post("/api/openrouter/batch-webhook", content=event_body, headers=headers)
+    assert repeated.status_code == 204
+    result = await client.get(f"/api/roadmaps/{generation_id}")
+    assert result.json()["status"] == "completed"
+    assert result.json()["content"] == "# Webhook roadmap"
+
+    invalid = await client.post(
+        "/api/openrouter/batch-webhook", content=event_body,
+        headers={"X-OpenRouter-Signature": "t=1,v1=invalid"},
+    )
+    assert invalid.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_openrouter_batch_submission_uses_mocked_httpx(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class MockResponse:
+        status_code = 202
+        is_error = False
+
+        def json(self):
+            return {"id": "batch-test", "status": "validating"}
+
+    class MockAsyncClient:
+        def __init__(self, *, timeout):
+            assert timeout > 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, headers, json):
+            captured.update(url=url, headers=headers, body=json)
+            return MockResponse()
+
+    monkeypatch.setattr("app.openrouter.httpx.AsyncClient", MockAsyncClient)
+    provider = OpenRouterClient(AppConfig(_env_file=None, openrouter_base_url="https://router.test/api/v1"))
+    result = await provider.create_batch(
+        api_key="mock-secret", model="provider/model", system_prompt="system",
+        user_prompt="user", custom_id="roadmap-1", callback_url="https://app.example.test/webhook",
+    )
+    assert result["id"] == "batch-test"
+    assert captured["url"] == "https://router.test/api/v1/batches"
+    assert captured["headers"] == {"Authorization": "Bearer mock-secret"}
+    assert captured["body"]["model"] == "provider/model"
+    assert captured["body"]["endpoint"] == "/v1/chat/completions"
+    assert captured["body"]["callback_url"] == "https://app.example.test/webhook"
+    request = captured["body"]["requests"][0]
+    assert request["custom_id"] == "roadmap-1"
+    assert request["body"]["messages"] == [
+        {"role": "system", "content": "system"}, {"role": "user", "content": "user"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_langgraph_retrieves_context_and_validates_output(api, monkeypatch):
     _, app, _ = api
 
@@ -269,6 +447,7 @@ async def test_langgraph_retrieves_context_and_validates_output(api, monkeypatch
 def test_cors_origins_accept_comma_separated_configuration():
     config = AppConfig(_env_file=None, cors_origins="http://localhost:5173,http://localhost:3000")
     assert config.cors_origins == ["http://localhost:5173", "http://localhost:3000"]
+    assert AppConfig(_env_file=None, openrouter_batch_callback_url="").openrouter_batch_callback_url is None
 
 
 @pytest.mark.asyncio

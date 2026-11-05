@@ -1,5 +1,9 @@
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
+from datetime import datetime, timezone
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from uuid import uuid4
@@ -21,10 +25,12 @@ from app.models import (
     LessonComplementRecord,
     LessonRecord,
     NoteRecord,
+    RoadmapGenerationRecord,
     utc_now,
 )
 from app.openrouter import ModelCatalog, OpenRouterClient, OpenRouterError
 from app.rag import index_source
+from app.roadmap import build_roadmap_prompts, roadmap_result_from_batch
 from app.schemas import (
     CreditsResponse,
     FeedbackInput,
@@ -37,6 +43,8 @@ from app.schemas import (
     NoteInput,
     NoteResponse,
     OpenRouterKeyInput,
+    RoadmapGenerationResponse,
+    RoadmapRequest,
     SecretStatusResponse,
     SettingsResponse,
     SettingsUpdate,
@@ -50,6 +58,22 @@ from app.security import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def verify_openrouter_signature(raw_body: bytes, signature_header: str, secret: str) -> bool:
+    try:
+        parts = dict(part.strip().split("=", 1) for part in signature_header.split(","))
+        timestamp = parts["t"]
+        signature = parts["v1"]
+        signed_at = int(timestamp)
+    except (KeyError, ValueError):
+        return False
+    if abs(datetime.now(timezone.utc).timestamp() - signed_at) > 300:
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"), f"{timestamp},".encode("utf-8") + raw_body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -354,6 +378,168 @@ def create_app(
         if lesson is None:
             raise HTTPException(status_code=404, detail="Lesson not found.")
         return lesson
+
+    @app.post(
+        "/api/lessons/{lesson_id}/roadmap",
+        response_model=RoadmapGenerationResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def create_lesson_roadmap(
+        lesson_id: str,
+        payload: RoadmapRequest,
+        request: Request,
+        session: AsyncSession = Depends(get_session),
+    ) -> RoadmapGenerationResponse:
+        lesson = await session.get(LessonRecord, lesson_id)
+        if lesson is None:
+            raise HTTPException(status_code=404, detail="Lesson not found.")
+
+        config: AppConfig = request.app.state.config
+        api_key = await get_api_key(session, config)
+        if not api_key:
+            raise HTTPException(status_code=409, detail="Configure an OpenRouter API key before generating a roadmap.")
+
+        try:
+            catalogue = await request.app.state.catalog.get()
+        except OpenRouterError:
+            raise HTTPException(status_code=502, detail="The model catalogue could not be checked.") from None
+        if not any(model["id"] == payload.model for model in catalogue["data"]):
+            raise HTTPException(status_code=422, detail="The selected model is not currently available in OpenRouter.")
+
+        result = await session.execute(
+            select(LessonComplementRecord)
+            .where(LessonComplementRecord.lesson_id == lesson.id)
+            .order_by(LessonComplementRecord.created_at, LessonComplementRecord.id)
+        )
+        complements = list(result.scalars().all())
+        system_prompt, user_prompt = build_roadmap_prompts(lesson, complements)
+        generation = RoadmapGenerationRecord(
+            id=str(uuid4()), lesson_id=lesson.id, model=payload.model, status="pending"
+        )
+        session.add(generation)
+        await session.commit()
+
+        try:
+            batch = await request.app.state.openrouter.create_batch(
+                api_key=api_key,
+                model=payload.model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                custom_id=generation.id,
+                callback_url=config.openrouter_batch_callback_url,
+            )
+        except OpenRouterError as exc:
+            generation.status = "failed"
+            generation.error = str(exc)
+            await session.commit()
+            if exc.status_code == 429:
+                status_code = 429
+            elif exc.status_code == 400:
+                status_code = 422
+                detail = "The selected model may not support OpenRouter Batch API. Choose a batch-enabled model."
+                raise HTTPException(status_code=status_code, detail=detail) from None
+            else:
+                status_code = 502
+            raise HTTPException(status_code=status_code, detail=str(exc)) from None
+        except Exception:
+            logger.warning("Roadmap batch submission failed.")
+            generation.status = "failed"
+            generation.error = "Roadmap generation could not be submitted. Please try again."
+            await session.commit()
+            raise HTTPException(status_code=502, detail=generation.error) from None
+
+        generation.batch_id = batch["id"]
+        await session.commit()
+        return RoadmapGenerationResponse(id=generation.id, status=generation.status)
+
+    @app.get("/api/roadmaps/{generation_id}", response_model=RoadmapGenerationResponse)
+    async def read_roadmap_generation(
+        generation_id: str,
+        request: Request,
+        session: AsyncSession = Depends(get_session),
+    ) -> RoadmapGenerationResponse:
+        generation = await session.get(RoadmapGenerationRecord, generation_id)
+        if generation is None:
+            raise HTTPException(status_code=404, detail="Roadmap generation not found.")
+
+        if (
+            generation.status == "pending"
+            and generation.batch_id
+            and not request.app.state.config.openrouter_batch_callback_url
+        ):
+            api_key = await get_api_key(session, request.app.state.config)
+            if api_key:
+                try:
+                    batch = await request.app.state.openrouter.fetch_batch(generation.batch_id, api_key)
+                    result = roadmap_result_from_batch(batch, generation.id)
+                    if result is not None:
+                        generation.status, generation.content, generation.error = result
+                        await session.commit()
+                except OpenRouterError:
+                    pass
+
+        return RoadmapGenerationResponse(
+            id=generation.id,
+            status=generation.status,
+            content=generation.content,
+            error=generation.error,
+        )
+
+    @app.post("/api/openrouter/batch-webhook", status_code=status.HTTP_204_NO_CONTENT)
+    async def receive_openrouter_batch_webhook(request: Request, session: AsyncSession = Depends(get_session)) -> Response:
+        config: AppConfig = request.app.state.config
+        webhook_secret = (
+            config.openrouter_webhook_secret.get_secret_value().strip()
+            if config.openrouter_webhook_secret
+            else ""
+        )
+        if not webhook_secret:
+            raise HTTPException(status_code=503, detail="OpenRouter webhook verification is not configured.")
+
+        raw_body = await request.body()
+        if len(raw_body) > 65_536:
+            raise HTTPException(status_code=413, detail="Webhook payload is too large.")
+        signature = request.headers.get("X-OpenRouter-Signature", "")
+        if not verify_openrouter_signature(raw_body, signature, webhook_secret):
+            raise HTTPException(status_code=401, detail="Invalid OpenRouter webhook signature.")
+        try:
+            event = json.loads(raw_body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="Invalid webhook payload.") from None
+
+        event_id = event.get("id") if isinstance(event, dict) else None
+        event_type = event.get("type") if isinstance(event, dict) else None
+        data = event.get("data") if isinstance(event, dict) else None
+        batch_id = data.get("id") if isinstance(data, dict) else None
+        if not all(isinstance(value, str) and value for value in (event_id, event_type, batch_id)):
+            raise HTTPException(status_code=400, detail="Invalid webhook payload.")
+        if event_type not in {"batch.completed", "batch.failed", "batch.expired", "batch.cancelled"}:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        result = await session.execute(
+            select(RoadmapGenerationRecord).where(RoadmapGenerationRecord.batch_id == batch_id)
+        )
+        generation = result.scalar_one_or_none()
+        if generation is None:
+            raise HTTPException(status_code=503, detail="Roadmap batch is not registered yet.")
+        if generation.webhook_event_id == event_id or generation.status != "pending":
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        api_key = await get_api_key(session, config)
+        if not api_key:
+            raise HTTPException(status_code=503, detail="OpenRouter credentials are not available.")
+        try:
+            batch = await request.app.state.openrouter.fetch_batch(batch_id, api_key)
+        except OpenRouterError:
+            raise HTTPException(status_code=503, detail="OpenRouter batch results are temporarily unavailable.") from None
+        result = roadmap_result_from_batch(batch, generation.id)
+        if result is None:
+            raise HTTPException(status_code=503, detail="OpenRouter batch results are not ready yet.")
+
+        generation.status, generation.content, generation.error = result
+        generation.webhook_event_id = event_id
+        await session.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post(
         "/api/lessons/{lesson_id}/complements",

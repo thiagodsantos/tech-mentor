@@ -36,6 +36,13 @@ export interface ModelsResponse {
   error: string | null
 }
 
+export interface RoadmapGeneration {
+  id: string
+  status: 'pending' | 'completed' | 'failed'
+  content: string | null
+  error: string | null
+}
+
 export interface LessonComplement {
   id: string
   lesson_id: string

@@ -84,6 +84,26 @@ class LessonComplementRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
 
+class RoadmapGenerationRecord(Base):
+    __tablename__ = "roadmap_generations"
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'completed', 'failed')", name="ck_roadmap_generation_status"),
+        UniqueConstraint("batch_id", name="uq_roadmap_generation_batch"),
+        UniqueConstraint("webhook_event_id", name="uq_roadmap_generation_webhook_event"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    lesson_id: Mapped[str] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), index=True)
+    model: Mapped[str] = mapped_column(String(255))
+    batch_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    webhook_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class FeedbackRecord(Base):
     __tablename__ = "lesson_feedback"
     __table_args__ = (UniqueConstraint("lesson_id", name="uq_feedback_per_lesson"),)

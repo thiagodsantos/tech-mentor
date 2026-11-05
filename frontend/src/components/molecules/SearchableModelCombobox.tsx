@@ -10,9 +10,10 @@ type Props = {
   onChange: (value: string) => void
   loading: boolean
   placeholder: string
+  ariaLabel?: string
 }
 
-export function SearchableModelCombobox({ id, value, models, onChange, loading, placeholder }: Props) {
+export function SearchableModelCombobox({ id, value, models, onChange, loading, placeholder, ariaLabel }: Props) {
   const sortedModels = sortModels(models)
   const selectedModel = sortedModels.find((model) => model.id === value) ?? null
 
@@ -32,7 +33,7 @@ export function SearchableModelCombobox({ id, value, models, onChange, loading, 
         <Search size={14} aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-slate-500" />
         <Combobox.Input
           id={id}
-          aria-label="Buscar e selecionar modelo"
+          aria-label={ariaLabel}
           placeholder={placeholder}
           className="field-input pl-10 pr-10"
         />

@@ -1,4 +1,4 @@
-import type { AppSettings, CreditsResponse, Lesson, LessonComplement, LessonFeedback, ModelsResponse, Note } from '../types'
+import type { AppSettings, CreditsResponse, Lesson, LessonComplement, LessonFeedback, ModelsResponse, Note, RoadmapGeneration } from '../types'
 
 const API_BASE = '/api'
 
@@ -42,6 +42,10 @@ const apiMessageTranslations: Array<[RegExp, string | ((match: RegExpMatchArray)
   [/^The model catalogue could not be checked\.$/i, 'Não foi possível validar o catálogo de modelos.'],
   [/^Configure an OpenRouter API key before generating a lesson\.$/i, 'Configure uma chave do OpenRouter antes de gerar uma aula.'],
   [/^Configure an OpenRouter API key before generating a complement\.$/i, 'Configure uma chave do OpenRouter antes de pedir um complemento.'],
+  [/^Configure an OpenRouter API key before generating a roadmap\.$/i, 'Configure uma chave do OpenRouter antes de exportar o roadmap.'],
+  [/^OpenRouter returned an empty roadmap\.$/i, 'O OpenRouter retornou um roadmap vazio. Tente novamente.'],
+  [/^Roadmap generation failed\. Please try again\.$/i, 'Não foi possível gerar o roadmap. Tente novamente.'],
+  [/^The selected model may not support OpenRouter Batch API\. Choose a batch-enabled model\.$/i, 'Este modelo não aceita geração assíncrona do OpenRouter. Escolha outro modelo para exportar o roadmap.'],
   [/^Complement generation failed\. Please try again\.$/i, 'Não foi possível gerar o complemento. Tente novamente.'],
   [/^The generated complement is empty\.$/i, 'O complemento veio vazio. Tente ajustar o pedido.'],
   [/^Only pending complements can be accepted\.$/i, 'Este complemento não está mais aguardando confirmação.'],
@@ -109,6 +113,12 @@ export const api = {
     request<Lesson>('/lessons', { method: 'POST', body: JSON.stringify(input) }),
   getLessons: () => request<Lesson[]>('/lessons'),
   getLesson: (id: string) => request<Lesson>(`/lessons/${encodeURIComponent(id)}`),
+  createRoadmap: (lessonId: string, model: string) =>
+    request<RoadmapGeneration>(`/lessons/${encodeURIComponent(lessonId)}/roadmap`, {
+      method: 'POST', body: JSON.stringify({ model }),
+    }),
+  getRoadmap: (generationId: string) =>
+    request<RoadmapGeneration>(`/roadmaps/${encodeURIComponent(generationId)}`),
   getComplements: (lessonId: string) => request<LessonComplement[]>(`/lessons/${encodeURIComponent(lessonId)}/complements`),
   createComplement: (lessonId: string, prompt: string) =>
     request<LessonComplement>(`/lessons/${encodeURIComponent(lessonId)}/complements`, {

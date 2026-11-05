@@ -73,6 +73,25 @@ class LessonResponse(BaseModel):
     sources: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class RoadmapRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=255)
+
+    @field_validator("model")
+    @classmethod
+    def clean_model(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Model must not be blank.")
+        return cleaned
+
+
+class RoadmapGenerationResponse(BaseModel):
+    id: str
+    status: Literal["pending", "completed", "failed"]
+    content: str | None = None
+    error: str | None = None
+
+
 class LessonComplementRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
 
