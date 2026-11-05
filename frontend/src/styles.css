@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  background: #090c11;
+}
+
+* { box-sizing: border-box; }
+html { min-width: 320px; scroll-behavior: smooth; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input, textarea, select { font: inherit; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid #baf36a;
+  outline-offset: 3px;
+}
+::selection { background: rgba(186, 243, 106, .25); color: #fff; }
+
+@layer components {
+  .field-label { @apply mb-2 block text-xs font-medium text-slate-300; }
+  .field-input { @apply block w-full rounded-xl border border-line bg-canvas px-3.5 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 hover:border-slate-600 focus:border-mint/50 focus:ring-2 focus:ring-mint/10 disabled:cursor-not-allowed disabled:opacity-60; }
+  .primary-button { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-mint px-4 py-2.5 text-sm font-semibold text-[#0c1207] transition hover:bg-[#ccfa8c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-panel disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400; }
+  .secondary-button { @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-line bg-white/[0.03] px-3.5 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-600 hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50; }
+  .switch-tab { @apply inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium text-slate-500 transition hover:text-slate-200; }
+  .switch-tab-active { @apply bg-white/[0.08] text-slate-100; }
+  .icon-button { @apply inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 transition hover:bg-white/[0.08] hover:text-white; }
+}
+
+.markdown-content { color: #cbd5e1; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4 { color: #f8fafc; font-weight: 600; line-height: 1.35; letter-spacing: -.02em; }
+.markdown-content h1 { margin: 1.8em 0 .7em; font-size: 1.7rem; }
+.markdown-content h2 { margin: 1.8em 0 .65em; border-bottom: 1px solid #222a35; padding-bottom: .5em; font-size: 1.35rem; }
+.markdown-content h3 { margin: 1.5em 0 .55em; font-size: 1.1rem; }
+.markdown-content p { margin: 1em 0; }
+.markdown-content ul, .markdown-content ol { margin: 1em 0; padding-left: 1.5rem; }
+.markdown-content ul { list-style: disc; }
+.markdown-content ol { list-style: decimal; }
+.markdown-content li { margin: .35em 0; padding-left: .2em; }
+.markdown-content li::marker { color: #baf36a; }
+.markdown-content blockquote { margin: 1.25em 0; border-left: 2px solid #baf36a; padding: .15em 0 .15em 1em; color: #94a3b8; }
+.markdown-content a { color: #baf36a; text-decoration: underline; text-decoration-color: rgba(186,243,106,.4); text-underline-offset: 3px; }
+.markdown-content a:hover { text-decoration-color: #baf36a; }
+.markdown-content :not(pre) > code { border: 1px solid #28323f; border-radius: .35rem; background: #171e27; padding: .15em .4em; color: #d3f79b; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .86em; }
+.markdown-content hr { margin: 2em 0; border-color: #222a35; }
+.markdown-content table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; margin: 1.25em 0; font-size: .9em; }
+.markdown-content th, .markdown-content td { border: 1px solid #28323f; padding: .65em .8em; text-align: left; }
+.markdown-content th { background: #171e27; color: #f1f5f9; font-weight: 600; }
+.markdown-content tr:nth-child(even) td { background: rgba(255,255,255,.015); }
+.markdown-content .mermaid-output svg { display: block; max-width: 100%; height: auto; margin: auto; }
+.markdown-content .hljs { background: transparent; }
+
+* { scrollbar-color: #303b49 #0d1219; scrollbar-width: thin; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
